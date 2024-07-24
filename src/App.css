@@ -36,3 +36,19 @@
     transform: rotate(360deg);
   }
 }
+
+.App {
+  text-align: center;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+
+button {
+  font-size: 18px;
+  padding: 10px 20px;
+  cursor: pointer;
+  margin: 20px 0;
+}
+
+
+

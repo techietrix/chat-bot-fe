@@ -3,18 +3,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
-const socket = io(process.env.REACT_APP_BACKEND_URL, {
-  auth: {
-    token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJ1c2VyMSIsImlhdCI6MTcyMTgwNDcxOCwiZXhwIjoxNzMwNDQ0NzE4fQ.JgA6ozBgufXpsyB24PZ8b-nsf792Kb4GvcX_8aysAks'
-  }
-});
+const socket = io(process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000');
 
 
-const SILENCE_THRESHOLD = 0.03;
-const START_THRESHOLD = 0.06;
+const SILENCE_THRESHOLD = 0.05;
+const SILENCE_THRESHOLD1 = 0.1;
 const SILENCE_DURATION = 2000; // 2 seconds
 
 function App() {
+  const [isRecording, setIsRecording] = useState(false);
   const [isAutoRecording, setIsAutoRecording] = useState(false);
   const [status, setStatus] = useState('Click the button to start recording');
   const [transcription, setTranscription] = useState('');
@@ -23,31 +20,28 @@ function App() {
   const streamRef = useRef(null);
   const processorRef = useRef(null);
   const silenceStartRef = useRef(null);
-  const silenceStartRefInit = useRef(null);
+  const silenceStartRefInit = useRef(Date.now());
   const isStarted = useRef(null);
   const silenceTimeoutRef = useRef(null);
   const hadSpeechRef = useRef(false); // Track if speech was detected
 
   useEffect(() => {
     socket.on('stop_mike', () => {
-      // stopMike()
+      stopMike()
     });
     socket.on('receive_audio', (data) => {
       setTranscription(data.transcription);
       setResponse(data.response);
-      setIsAutoRecording(false);
       stopRecording();
       const audio = new Audio(data.audioUrl);
       audio.play();
       setStatus('Playing response...');
       audio.onended = () => {
-        silenceStartRef.current = null;
         setStatus('Listening...');
-        // if (isAutoRecording) {
-        silenceStartRef.current = Date.now();
-        setIsAutoRecording(true);
-        startRecording();
-        // }
+        if (isAutoRecording) {
+          silenceStartRefInit.current = Date.now();
+          startRecording();
+        }
       };
     });
 
@@ -79,29 +73,53 @@ function App() {
         const audioDataArray = Array.from(audioData);
 
         // Check for silence
-
+        const isFirstWordFound = audioDataArray.some(sample => Math.abs(sample) > SILENCE_THRESHOLD1);
         const isSound = audioDataArray.some(sample => Math.abs(sample) > SILENCE_THRESHOLD);
-        const initRec = audioDataArray.some(sample => Math.abs(sample) > START_THRESHOLD);
-        console.log("initRec: ", initRec, "silenceStartRefInit.current: ", silenceStartRefInit.current)
-        if (initRec) {
-          silenceStartRefInit.current = Date.now();
+
+        if (isFirstWordFound && !isStarted.current) {
+          console.log('setting true 85')
+          isStarted.current = true;
         }
-        if (silenceStartRefInit.current) {
-          if (isSound) {
-            silenceStartRef.current = Date.now();
-          } else {
-            if (silenceStartRef.current && Date.now() - silenceStartRef.current > SILENCE_DURATION) {
-              silenceStartRefInit.current = null
-              setIsAutoRecording(false);
-              stopRecording();
-              setStatus('Auto-recording stopped');
+
+        //if mike started and first word not detected yet, then stop mike after 5 seconds
+        if (!isStarted.current) {
+          if (Date.now() - silenceStartRefInit.current >= 5000) {
+            stopMike();
+          }
+        }
+
+
+
+        //once recording started, and found 2 seconds of silence then emmit stop_recording.
+        if (!isSound) {
+          if (hadSpeechRef.current) {
+            if (!silenceStartRef.current) {
+              silenceStartRef.current = Date.now();
+            } else if (Date.now() - silenceStartRef.current >= SILENCE_DURATION) {
+              if (!silenceTimeoutRef.current) {
+                silenceTimeoutRef.current = setTimeout(() => {
+                  stopRecording();
+                }, 100);
+                // Small delay to ensure we catch the last bit of audio
+              }
             }
           }
+        }
+
+        if (isStarted.current) {
+          hadSpeechRef.current = true;
+          console.log('setting true 105')
+          silenceStartRef.current = null;
+
+          if (silenceTimeoutRef.current) {
+            clearTimeout(silenceTimeoutRef.current);
+            silenceTimeoutRef.current = null;
+          }
           socket.emit('audio_data', audioDataArray);
-        } else {
-          console.log('Not started yet');
         }
       };
+
+      setIsRecording(true);
       setStatus('Listening...');
     } catch (error) {
       console.error('Error starting recording:', error);
@@ -110,9 +128,36 @@ function App() {
   };
 
 
+
+  const stopMike = () => {
+    isStarted.current = null;
+    console.log('setting false')
+    console.log('called to stop recording')
+    setIsAutoRecording(false);
+    console.log(isRecording)
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    setIsRecording(false);
+    setStatus('');
+    silenceStartRef.current = null;
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    hadSpeechRef.current = false; // Reset speech detection
+  };
+
   const stopRecording = () => {
     isStarted.current = null;
-    silenceStartRef.current = null;
     console.log('setting false')
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -125,6 +170,7 @@ function App() {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
+    setIsRecording(false);
     setStatus('Processing...');
     socket.emit('stop_recording');
     silenceStartRef.current = null;
@@ -138,7 +184,7 @@ function App() {
   const toggleAutoRecording = () => {
     if (!isAutoRecording) {
       setIsAutoRecording(true);
-      silenceStartRefInit.current = null;
+      silenceStartRefInit.current = Date.now();
       startRecording();
     } else {
       setIsAutoRecording(false);
