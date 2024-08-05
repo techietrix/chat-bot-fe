@@ -5,7 +5,7 @@ import './App.css';
 
 const socket = io(process.env.REACT_APP_BACKEND_URL, {
   auth: {
-    token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJ1c2VyMSIsImlhdCI6MTcyMTgwNDcxOCwiZXhwIjoxNzMwNDQ0NzE4fQ.JgA6ozBgufXpsyB24PZ8b-nsf792Kb4GvcX_8aysAks'
+    token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2NjBkMjFkYjBhOTNjZTNmZTM3M2Y5NTEiLCJmaXJzdE5hbWUiOiJKb2huNCIsImxhc3ROYW1lIjoiRG9lNCIsImVtYWlsIjoidXNlcjRAZXhhbXBsZS5jb20iLCJyb2xlIjoic2FsZXNBZG1pbiIsInJvbGVJZCI6IjY2MDNmZmI3Y2Q1YWI4MjI0MDcwNDI4NCIsImFjY291bnRJZCI6IjY2MGMwMTRmYzMxZGRmMzYxYjJiZjcxMCIsImxhbmd1YWdlIjoiRW5nbGlzaCIsImlhdCI6MTcyMjMyNDMyMiwiZXhwIjoxNzQzOTI0MzIyfQ.5WD2i1T8QSS8aTzB56G_jnec5aek1jHNFWCHSrmutUo'
   }
 });
 
@@ -26,31 +26,27 @@ function App() {
   const silenceStartRefInit = useRef(null);
   const isStarted = useRef(null);
   const silenceTimeoutRef = useRef(null);
+  const mikeStaredOnRef = useRef(null);
+
   const hadSpeechRef = useRef(false); // Track if speech was detected
 
+  const [audioQueue, setAudioQueue] = useState([]);
+  const [isPlaying, setIsPlaying] = useState(false);
   useEffect(() => {
     socket.on('stop_mike', () => {
-      // stopMike()
-    });
-    socket.on('receive_audio', (data) => {
-      setTranscription(data.transcription);
-      setResponse(data.response);
-      setIsAutoRecording(false);
-      stopRecording();
-      const audio = new Audio(data.audioUrl);
-      audio.play();
-      setStatus('Playing response...');
-      audio.onended = () => {
-        silenceStartRef.current = null;
-        setStatus('Listening...');
-        // if (isAutoRecording) {
-        silenceStartRef.current = Date.now();
-        setIsAutoRecording(true);
-        startRecording();
-        // }
-      };
     });
 
+
+    socket.on('receive_audio', (data) => {
+      console.log("aya hua data: ", data, "\n")
+      setTranscription(data?.transcription || '');
+      setResponse(data?.response || '');
+      setIsAutoRecording(false);
+      if (isAutoRecording) {
+        stopRecording();
+      }
+      setAudioQueue(prevQueue => [...prevQueue, data.audioUrl]);
+    });
     socket.on('error', (errorMessage) => {
       console.error('Server error:', errorMessage);
       setStatus('Error: ' + errorMessage);
@@ -62,8 +58,47 @@ function App() {
     };
   }, [isAutoRecording]);
 
+
+  useEffect(() => {
+    if (audioQueue.length > 0 && !isPlaying) {
+      playNextAudio();
+    }
+  }, [audioQueue, isPlaying]);
+
+  const playNextAudio = () => {
+    console.log("dsfsfsfsfs: ", audioQueue)
+    if (audioQueue.length === 0) {
+      setIsPlaying(false);
+      return;
+    }
+    setIsPlaying(true);
+    const nextAudioUrl = audioQueue[0];
+    if (nextAudioUrl === 'FINISHED') {
+      console.log("********FINED*********")
+      setAudioQueue([])
+      setIsPlaying(false);
+      silenceStartRef.current = null;
+      setStatus('Listening...');
+      // // if (isAutoRecording) {
+      silenceStartRef.current = Date.now();
+      setIsAutoRecording(true);
+      startRecording();
+    } else {
+      const audio = new Audio(nextAudioUrl);
+      audio.play();
+      audio.onended = () => {
+        setAudioQueue(prevQueue => prevQueue.slice(1));
+        setIsPlaying(false);
+      };
+    }
+
+  };
+
   const startRecording = async () => {
     try {
+      setAudioQueue([])
+      setIsPlaying(false);
+      mikeStaredOnRef.current = Date.now();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
@@ -90,7 +125,7 @@ function App() {
           if (isSound) {
             silenceStartRef.current = Date.now();
           } else {
-            if (silenceStartRef.current && Date.now() - silenceStartRef.current > SILENCE_DURATION) {
+            if (silenceStartRef.current && (Date.now() - silenceStartRef.current) > SILENCE_DURATION) {
               silenceStartRefInit.current = null
               setIsAutoRecording(false);
               stopRecording();
@@ -99,6 +134,11 @@ function App() {
           }
           socket.emit('audio_data', audioDataArray);
         } else {
+          if (mikeStaredOnRef.current && (Date.now() - mikeStaredOnRef.current) > 5000) {
+            mikeStaredOnRef.current = null
+            setIsAutoRecording(false);
+            stopRecording();
+          }
           console.log('Not started yet');
         }
       };
@@ -111,8 +151,11 @@ function App() {
 
 
   const stopRecording = () => {
+    setAudioQueue([])
+    setIsPlaying(false);
     isStarted.current = null;
     silenceStartRef.current = null;
+    mikeStaredOnRef.current = null;
     console.log('setting false')
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
